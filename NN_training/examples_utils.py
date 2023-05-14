@@ -9,13 +9,13 @@ import numpy as np
 from typing import Tuple
 
 
-def set_seeds_and_device(seed: int, use_gpu: bool = True) -> torch.device:
-    random.seed(0)
-    np.random.seed(0)
-    torch.random.manual_seed(0)
+def set_seeds_and_device(seed: int = 0, use_gpu: bool = True) -> torch.device:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.random.manual_seed(seed)
     device = torch.device("cpu")
     if use_gpu and torch.cuda.is_available():
-        torch.cuda.manual_seed(0)
+        torch.cuda.manual_seed(seed)
         device = torch.device("cuda:0")
     return device
 

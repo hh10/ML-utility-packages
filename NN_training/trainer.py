@@ -7,6 +7,7 @@ from collections import defaultdict
 from tqdm import tqdm
 import os
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 
 class StatsCalc(object):
@@ -42,12 +43,16 @@ class Trainer(ABC):
     loss_stats = defaultdict(StatsCalc)
     acc_stats = defaultdict(StatsCalc)
 
+    def __post_init__(self):
+        self.loss_stats = defaultdict(StatsCalc)
+        self.acc_stats = defaultdict(StatsCalc)
+
     @abstractmethod
     def loss_and_accuracy(self, device, data, **kwargs) -> Tuple[torch.tensor, float]:
         """ compute, stores and return loss and accuracy tensors  """
         pass
 
-    def pre_epoch(self, train: bool):
+    def pre_epoch(self, train: bool, epoch: int):
         for sc in {**self.loss_stats, **self.acc_stats}.values():
             sc.reset()
         self.optimizer.zero_grad()
@@ -64,7 +69,7 @@ class Trainer(ABC):
             self.lr_scheduler.step()
         self.optimizer.zero_grad()
 
-    def post_epoch(self, train: bool):
+    def post_epoch(self, train: bool, epoch: int):
         stats_type = "train" if train else "val"
         for sc in {**self.loss_stats, **self.acc_stats}.values():
             sc.add_checkpoint(stats_type)
@@ -74,13 +79,18 @@ class Trainer(ABC):
 
 
 class TrainingRunner():
-    def __init__(self, trainers: List[Trainer], device: Union[str, torch.device]):
+    def __init__(self, model: nn.Module, trainers: List[Trainer], device: Union[str, torch.device], out_dir: str, train_dl, test_dl):
+        self.model = model
         self.trainers = trainers
         self.device = device
+        self.out_dir = out_dir
+        self.train_dl = train_dl
+        self.test_dl = test_dl
+        self.name = "_".join([trainer.name for trainer in self.trainers])
 
-    def pre_epoch(self, train: bool):
+    def pre_epoch(self, epoch: int, train: bool):
         for trainer in self.trainers:
-            trainer.pre_epoch(train)
+            trainer.pre_epoch(train, epoch)
 
     def predict(self, data, **kwargs):
         for trainer in self.trainers:
@@ -90,48 +100,48 @@ class TrainingRunner():
         for trainer in self.trainers:
             trainer.learn(self.device, data, **kwargs)
 
-    def post_epoch(self, train: bool):
+    def post_epoch(self, epoch: int, train: bool):
         for trainer in self.trainers:
-            trainer.post_epoch(train)
+            trainer.post_epoch(train, epoch)
 
     def get_current_accuracies(self):
         return {k: v.average for trainer in self.trainers for k, v in trainer.acc_stats.items()}
 
-    def train(self, num_epochs, train_dl, val_dl, out_dir, dummy_run=False):
-        # log the trainers to know what happened
-        os.makedirs(out_dir)
-        with open(os.path.join(out_dir, "training_config.txt"), 'a+') as tcf:
+    def train(self, num_epochs, dummy_run=False):
+        # log the trainers to know what exactly was run
+        os.makedirs(self.out_dir, exist_ok=True)
+        with open(os.path.join(self.out_dir, f"training_config_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"), 'a+') as tcf:
             for trainer in self.trainers:
-                tcf.write(data_class_str(trainer) + '\n')
+                tcf.write(data_class_str(trainer) + '\n\n')
 
         accs_str = lambda: ", ".join([f"{k}: {100 * v:.3f}%" for k, v in self.get_current_accuracies().items()])  # noqa: E731
-        training_title = " ".join([trainer.name for trainer in self.trainers])
-        epoch_pbar = tqdm(range(num_epochs), desc=f"{training_title}: Epochs", leave=True)
+
+        epoch_pbar = tqdm(range(num_epochs), desc=f"{self.name}: Epochs", leave=True)
         for epoch in epoch_pbar:
             if dummy_run and epoch > 1: break  # noqa: E701
-            train_pbar = tqdm(train_dl, leave=False)
-            test_pbar = tqdm(val_dl, leave=False)
+            train_pbar = tqdm(self.train_dl, leave=False)
+            test_pbar = tqdm(self.test_dl, leave=False)
 
-            self.pre_epoch(train=True)
+            self.pre_epoch(epoch, train=True)
             for di, data in enumerate(train_pbar):
                 if dummy_run and di > 3: break  # noqa: E701
                 self.learn(data)
-                train_pbar.set_description(f"{training_title}: Train Accuracies: {accs_str()}")
-            self.post_epoch(train=True)
+                train_pbar.set_description(f"{self.name}: Train Accuracies: {accs_str()}")
+            self.post_epoch(epoch, train=True)
 
-            self.pre_epoch(train=False)
+            self.pre_epoch(epoch, train=False)
             with torch.no_grad():
-                for di, (x, _label) in enumerate(test_pbar):
+                for di, data in enumerate(test_pbar):
                     if dummy_run and di > 3: break  # noqa: E701
                     self.predict(data)
-                    test_pbar.set_description(f"{training_title}: Test Accuracies: {accs_str()}")
-            self.post_epoch(train=False)
+                    test_pbar.set_description(f"{self.name}: Test Accuracies: {accs_str()}")
+            self.post_epoch(epoch, train=False)
 
-            self.plot_progress(out_dir, training_title, 
+            self.plot_progress(self.out_dir, self.name,
                                {k: v for trainer in self.trainers for k, v in trainer.loss_stats.items()},
                                {k: v for trainer in self.trainers for k, v in trainer.acc_stats.items()})
-        print(f"Final test {training_title} accuracies: {accs_str()}")
-        print(f"Training config, progress and results logged in {out_dir}.")
+        print(f"Final test {self.name} accuracies: {accs_str()}")
+        print(f"Training config, progress and results logged in {self.out_dir}.")
 
     @staticmethod
     def plot_progress(out_dir, label, losses_stats, accs_stats):
@@ -147,10 +157,10 @@ class TrainingRunner():
             ax[li].legend()
         title_str = ""
         for ai, (acc_type, acc_stats) in enumerate(accs_stats.items()):
-            title_str += f"{acc_type}."
+            title_str += f"{acc_type}"
             for acc_subtype, accs in acc_stats.checkpoints.items():
-                ax[-1].plot(accs, label=acc_subtype)
-                title_str += f"  {acc_subtype}: {accs[-1]:.2f}"
+                ax[-1].plot(accs, label=f"{acc_type} {acc_subtype}")
+                title_str += f" {acc_subtype}: {accs[-1]:.2f}  "
             ax[-1].set_title(f"{title_str} (epoch: {len(accs)})")
             ax[-1].legend()
 
