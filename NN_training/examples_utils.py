@@ -8,6 +8,8 @@ import random
 import numpy as np
 from typing import Tuple
 
+from trainer import DatasetWrapper
+
 
 def set_seeds_and_device(seed: int = 0, use_gpu: bool = True) -> torch.device:
     random.seed(seed)
@@ -20,7 +22,7 @@ def set_seeds_and_device(seed: int = 0, use_gpu: bool = True) -> torch.device:
     return device
 
 
-def get_CIFAR10_dataloaders(dataset_root: str) -> Tuple[DataLoader, DataLoader]:
+def get_CIFAR10_dataloaders(dataset_root: str, x_shape) -> Tuple[DatasetWrapper, DataLoader, DataLoader]:
     mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
     transform_train = transforms.Compose([
         transforms.RandomHorizontalFlip(),
@@ -35,7 +37,8 @@ def get_CIFAR10_dataloaders(dataset_root: str) -> Tuple[DataLoader, DataLoader]:
     train_dl = DataLoader(trainset, batch_size=128, shuffle=True, num_workers=16, pin_memory=True, drop_last=True)
     testset = datasets.CIFAR10(root=dataset_root, train=False, download=True, transform=transform_test)
     test_dl = DataLoader(testset, batch_size=100, shuffle=False, num_workers=16, pin_memory=True)
-    return train_dl, test_dl
+    dataset = DatasetWrapper(name='CIFAR10', x_shape=x_shape, num_classes=10, mean=mean, std=std)
+    return dataset, train_dl, test_dl
 
 
 def get_tiny_resnet18(num_classes: int) -> nn.Sequential:
